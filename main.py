@@ -2,181 +2,229 @@ import pdfplumber
 import re
 import json
 
+# Извлечение теста из PDF
 def extract_text_from_pdf(pdf_path):
     full_text = ""
     with pdfplumber.open(pdf_path) as pdf:
-        for page in pdf.pages[202:203]:
+        n = 1
+        # Основная часть текста (после оглавлений) начинается с 14-ой страницы
+        for page in pdf.pages[13:]:
             full_text += page.extract_text() + '\n'
+            print(int((n/(358-13))*100), '%')
+            n += 1
     return full_text.replace("■","").replace("○","")
 
 
+# Получение словаря из текста
 def parse_book(text):
+
+    # инициализируем словарь
     book_structure = {}
+
+    # номер и заголовок текущей главы
     current_chapter_number = None
     current_chapter_title = ""
 
+    # номер и заголовок текущего раздела
     current_section_number = None
     current_section_title = ""
 
+    # номер и заголовок текущего подраздела
     current_subsection_number = None
     current_subsection_title = ""
 
+    # текущий текст
     current_text = ""
-    
-    chapter_number_pattern = re.compile(r'^ГЛАВА\s+(\d+)')
+
+    # РЕГУЛЯРНЫЕ ВЫРАЖЕНИЯ:
+
+    # номер главы (ГЛАВА 1)
+    chapter_number_pattern = re.compile(r'^ГЛАВА\s?+(\d+)')
+
+    # строка, в которой все буквы заглавные (КАПС ЛОК)
     all_caps_pattern = re.compile(r'^([A-ZА-Я\s]+)$')
-    section_pattern = re.compile(r'^(\d+\.\d+)\s+([A-ZА-Я\s]+)$')
-    subsection_pattern = re.compile(r'^(\d+\.\d+\.\d+)\s+(.+)$')
+
+    # номер и заголовок раздела (2.1 НОВЫЙ РАЗДЕЛ)
+    section_pattern = re.compile(r'^(\d+\.\d+\.?)\s?+([A-ZА-Я\s,]+)$')
+
+    # номер и заголовок подраздела (2.1.1 Новый подраздел)
+    subsection_pattern = re.compile(r'^(\d+\.\d+\.\d+\.?)\s?+(.+)$')
     text_start_pattern = re.compile(r'^([А-Я][а-ёя\s]+)')
-
-    current_line = 0
-    text_lines = text.splitlines()
-    lines_total = len(text_lines)
     
+    # делим текст по строкам, получим список
+    text_lines = text.splitlines()
 
-    while current_line < lines_total:
-        chapter_number_match = chapter_number_pattern.match(text_lines[current_line])
+    # функция внесения текста в словарь
+    def save_text():
+        nonlocal current_text
+        if len(current_text) and current_chapter_number is not None:
+            current_text_norm = current_text.replace("\n", " ").strip()
+            if current_section_number is not None:
+                current_section = \
+                    book_structure[current_chapter_number]["sections"][current_section_number]
+                
+                if current_subsection_number is not None:
+                    current_section["subsections"][current_subsection_number]["text"] = current_text_norm                        
+                else:
+                    current_section["text"] = current_text_norm
+
+            else:
+                book_structure[current_chapter_number]["text"] = current_text_norm
+            
+            current_text = ""
+
+    # пройдем по каждой линии текста (нужны индексы, поэтому используем range)
+    for i in range(0, len(text_lines)):
+
+        # Проверяем является ли текущая строка номером главы (ГЛАВА 1)
+        chapter_number_match = chapter_number_pattern.match(text_lines[i])
         if chapter_number_match:
+            # перед началом новой главы, сохраняем старый текст в словарь
+            save_text()
 
+            # обнуляем номер и заголовок текущего раздела
             current_section_number = None
             current_section_title = ""
 
+            # обнуляем номер и заголовок текущего подраздела
             current_subsection_number = None
             current_subsection_title = ""
-
-            current_text = ""
-
+            
+            # определяем номер новой главы
             current_chapter_number = chapter_number_match.group(1)
-            print(current_chapter_number)
-            
+
+            # инициализируем заголовок новой главы
             current_chapter_title = ""
-            current_line += 1            
-            is_all_caps = all_caps_pattern.match(text_lines[current_line])
-            while is_all_caps:
-                current_chapter_title += " " + text_lines[current_line]
-                current_line += 1
-                if current_line == lines_total - 1:
-                    break
-                is_all_caps = all_caps_pattern.match(text_lines[current_line])
-            
+            # переходим в следующую строку (так как заголовок главы начинается со следующей строки)
+            j = i + 1
+
+            # возьмем все последующие строки, которые написаны капс-локом (только заглавными),
+            # объединяем их в одну строку (без переноса строки) как заголовок главы
+            all_caps_match = all_caps_pattern.match(text_lines[j])
+            while all_caps_match and j < len(text_lines):
+                current_chapter_title += text_lines[j] + " "
+                j += 1
+                all_caps_match = all_caps_pattern.match(text_lines[j])  
+
+            # записываем новую главу в словарь
             book_structure[current_chapter_number] = {
-                "title": current_chapter_title.strip().capitalize(),
+                'title': current_chapter_title.capitalize().strip()
             }
+            
+            # переходим в следующую итерацию (в следующую строку)
+            continue
 
-
-        section_match = section_pattern.match(text_lines[current_line])
+        # Проверяем является ли текущая строка номером и названием раздела (1.1 НОВЫЙ РАЗДЕЛ)
+        section_match = section_pattern.match(text_lines[i])
         if section_match:
+            # перед началом нового раздела, сохраняем текущий текст в словарь
+            save_text()
+
+            # обнуляем номер и название текущего подраздела
             current_subsection_number = None
             current_subsection_title = ""
-
-            current_text = ""
-
+            
+            # получаем номер и название раздела
             current_section_number = section_match.group(1)
             current_section_title = section_match.group(2)
 
-            current_line += 1
+            # если в конце номера есть точка, то убираем
+            if current_section_number[-1] == ".":
+                current_section_number = current_section_number[:-1]
+
+            # переходим в следующую строку для проверки продолжения названия раздела
+            j = i + 1
+
+            # возьмем все последующие строки, которые написаны капс-локом (только заглавными),
+            # объединяем их в одну строку (без переноса строки) как заголовок раздела
+            all_caps_match = all_caps_pattern.match(text_lines[j])
+            while all_caps_match and j < len(text_lines):
+                current_section_title += text_lines[j] + " "
+                j += 1
+                all_caps_match = all_caps_pattern.match(text_lines[j])
             
-            is_all_caps = all_caps_pattern.match(text_lines[current_line])
-            while is_all_caps:
-                current_section_title += text_lines[current_line]
-                current_line += 1
-                if current_line == lines_total - 1:
-                    break
-                is_all_caps = all_caps_pattern.match(text_lines[current_line])
+            # в словаре для текущей главы создаем под-словарь для разделов, если еще нет
+            if 'sections' not in book_structure[current_chapter_number].keys():
+                book_structure[current_chapter_number]['sections'] = {}
 
-            book_structure[current_chapter_number]["sections"] = {
-                current_section_number: {
-                    "title": current_section_title.strip().capitalize()
-                }
+            # записываем новый раздел в словарь (в текущую главу)
+            book_structure[current_chapter_number]['sections'][current_section_number] = {
+                    'title': current_section_title.capitalize().strip()
             }
-        
 
+            # переходим в следующую итерацию (в следующую строку)
+            continue
 
-        subsection_match = subsection_pattern.match(text_lines[current_line])
+        # Проверяем является ли текущая строка номером и названием подраздела (1.1.1 Новый подраздел)
+        subsection_match = subsection_pattern.match(text_lines[i])
         if subsection_match:
+            # сначала сохраняем текущий текст
+            save_text()
 
-            current_text = ""
-
+            # получаем номер и заголовок подраздела
             current_subsection_number = subsection_match.group(1)
             current_subsection_title = subsection_match.group(2)
 
-            current_line += 1
-            
-            is_text_start = text_start_pattern.match(text_lines[current_line])
-            while not is_text_start:
-                current_subsection_title += text_lines[current_line]
-                current_line += 1
-                if current_line == lines_total:
-                    break
-                is_text_start = text_start_pattern.match(text_lines[current_line])
+            # убираем последнюю точку с номера, если есть
+            if current_subsection_number[-1] == ".":
+                current_subsection_number = current_subsection_number[:-1]
 
-            book_structure[current_chapter_number]["sections"][current_section_number]["subsections"] = {
-                current_subsection_number: {
-                    "title": current_subsection_title.strip().capitalize()
-                }
+            # переходим в следующую строку для проверки продолжения заголовка
+            j = i + 1
+
+            # проверяем является ли строка началом текста
+            # все последующие строки, не являющиеся текстом, 
+            # записываем как продолжение заголовка подраздела
+            is_text_start = text_start_pattern.match(text_lines[j])
+            while not is_text_start and j < len(text_lines):
+                current_subsection_title += text_lines[j] + " "
+                j += 1
+                is_text_start = text_start_pattern.match(text_lines[j])
+            
+            # в словаре для текущего раздела создаем под-словарь для подразделов, если еще нет
+            if 'subsections' not in book_structure[current_chapter_number]["sections"][current_section_number].keys():
+                book_structure[current_chapter_number]["sections"][current_section_number]["subsections"] = {}
+
+            # записываем подраздел в словарь
+            book_structure[current_chapter_number]["sections"][current_section_number]["subsections"][current_subsection_number] = {
+                'title': current_subsection_title.strip()
             }
-    
 
-        # is_text = True
-        # while is_text and current_line < lines_total:
-        #     current_text += text_lines[current_line] + ' '
-
-        #     chapter_number_match = chapter_number_pattern.match(text_lines[current_line])
-        #     section_match = section_pattern.match(text_lines[current_line])
-        #     subsection_match = subsection_pattern.match(text_lines[current_line])
-
-
-        #     if chapter_number_match or section_match or subsection_match:
-        #         is_text = False
-        #     current_line += 1
+            # переходим в следующую итерацию (строку)
+            continue
         
-
-        if current_chapter_number is not None:
-
-            if current_section_number is not None:
-
-                if current_subsection_number is not None:
-                    subsection_structure = book_structure[current_chapter_number]["sections"][current_section_number]["subsections"]
-                    subsection_structure[current_subsection_number]["text"] = current_text.replace("\n", " ").strip()
-                
-                else:
-                    book_structure[current_chapter_number]["sections"][current_section_number]["text"] = current_text.replace("\n", " ").strip()
-
+        # если строка не является номером и заголовком главы, раздела или подраздела,
+        # то проверяем не является ли она продолжением заголовка
+        if not all_caps_pattern.match(text_lines[i]):
+            # если является частью (продолжением) заголовка, то игнорируем и продолжим итерацию
+            if current_subsection_number is not None and current_text == "" and text_lines[i][0].islower():
+                continue
+            # иначе записываем как продолжение текущего текста
             else:
-                book_structure[current_chapter_number]["text"] = current_text.replace("\n", " ").strip()
-            
-            current_text = ""
-        
-        current_line += 1
-        
-            # current_chapter_number = None
-            # current_chapter_title = ""
+                current_text += text_lines[i] + " "
 
-            # current_section_number = None
-            # current_section_title = ""
-
-            # current_subsection_number = None
-            # current_subsection_title = ""
-
-            # current_text = ""
-
-            # current_line += 1
-
-
+    # записываем текст в текущую главу, раздел или подраздел
+    save_text()
+    
+    #  возвращаем полученный словарь
     return book_structure
 
+# получаем текст
+text = extract_text_from_pdf("mybook.pdf")
 
-# chapter_number_pattern = re.compile(r'^ГЛАВА\s+(\d+)')
+# словарь:
+book_text_dict = parse_book(text)
 
-# print(chapter_number_pattern.match("ГЛАВА 2").group(1))
-
-
-# book_text = extract_text_from_pdf("mybook.pdf")
-
-
-book_text_dict = parse_book(extract_text_from_pdf("mybook.pdf"))
-
+# сохраняем в JSON--файл:
 with open('struct.json', 'w', encoding='utf-8') as json_file:
     json.dump(book_text_dict, json_file, ensure_ascii=False, indent=4)
 
-# print(book_text)
+
+
+
+
+
+
+
+
+
